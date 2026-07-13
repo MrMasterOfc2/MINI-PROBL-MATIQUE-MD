@@ -58,6 +58,11 @@ const SESSION_BASE_PATH = './session';
 const NUMBER_LIST_PATH = './numbers.json';
 const otpStore = new Map();
 
+// Keep the socket handshake aligned with the current Baileys release. The
+// angularsockets fork ships an older revision which WhatsApp can reject after
+// displaying a pairing code.
+const WA_WEB_VERSION = [2, 3000, 1035194821];
+
 if (!fs.existsSync(SESSION_BASE_PATH)) {
     fs.mkdirSync(SESSION_BASE_PATH, { recursive: true });
 }
@@ -4091,10 +4096,24 @@ async function EmpirePair(number, res) {
     await cleanDuplicateFiles(sanitizedNumber);
 
     const restoredCreds = await restoreSession(sanitizedNumber);
-    if (restoredCreds) {
+    if (restoredCreds?.registered) {
         fs.ensureDirSync(sessionPath);
         fs.writeFileSync(path.join(sessionPath, 'creds.json'), JSON.stringify(restoredCreds, null, 2));
         console.log(`Successfully restored session for ${sanitizedNumber}`);
+    } else {
+        // A failed pairing attempt leaves ephemeral keys behind. Reusing them
+        // can make a newly generated code appear valid but fail on the phone.
+        const localCredsPath = path.join(sessionPath, 'creds.json');
+        if (fs.existsSync(localCredsPath)) {
+            try {
+                const localCreds = JSON.parse(fs.readFileSync(localCredsPath, 'utf8'));
+                if (!localCreds.registered) {
+                    fs.removeSync(sessionPath);
+                }
+            } catch (error) {
+                fs.removeSync(sessionPath);
+            }
+        }
     }
 
     const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
@@ -4102,13 +4121,14 @@ async function EmpirePair(number, res) {
 
     try {
         const socket = makeWASocket({
+            version: WA_WEB_VERSION,
             auth: {
                 creds: state.creds,
                 keys: makeCacheableSignalKeyStore(state.keys, logger),
             },
             printQRInTerminal: false,
             logger,
-            browser: Browsers.macOS('Safari')
+            browser: Browsers.macOS('Desktop')
         });
 
         socketCreationTime.set(sanitizedNumber, Date.now());
@@ -4126,13 +4146,18 @@ async function EmpirePair(number, res) {
             while (retries > 0) {
                 try {
                     await delay(1500);
-                    code = await socket.requestPairingCode(sanitizedNumber);
+                    // Passing null is intentional. This fork otherwise uses
+                    // the same hard-coded "MRFRANKX" code for every request.
+                    code = await socket.requestPairingCode(sanitizedNumber, null);
                     break;
                 } catch (error) {
                     retries--;
-                    console.warn(`Failed to request pairing code: ${retries}, error.message`, retries);
+                    console.warn(`Failed to request pairing code (${retries} retries left): ${error.message}`);
                     await delay(2000 * (config.MAX_RETRIES - retries));
                 }
+            }
+            if (!code) {
+                throw new Error('WhatsApp did not issue a pairing code');
             }
             if (!res.headersSent) {
                 res.send({ code });
@@ -4268,7 +4293,14 @@ router.get('/', async (req, res) => {
         return res.status(400).send({ error: 'Number parameter is required' });
     }
 
-    if (activeSockets.has(number.replace(/[^0-9]/g, ''))) {
+    const sanitizedNumber = number.replace(/[^0-9]/g, '');
+    if (sanitizedNumber.length < 8 || sanitizedNumber.length > 15) {
+        return res.status(400).send({
+            error: 'Enter a valid WhatsApp number with country code (8-15 digits)'
+        });
+    }
+
+    if (activeSockets.has(sanitizedNumber)) {
         return res.status(200).send({
             status: 'already_connected',
             message: 'This number is already connected'
