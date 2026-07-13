@@ -803,7 +803,7 @@
       e.preventDefault();
       if (!c.value) {
         a.innerHTML = '<div style="color:var(--accent);font-weight:500;background:rgba(255,42,109,0.1);padding:10px;border-radius:8px;border:1px solid rgba(255,42,109,0.3)"><i class="fas fa-exclamation-circle"></i> Enter your WhatsApp number with country code.</div>';
-      } else if (c.value.replace(/[^0-9]/g, "").length < 11) {
+      } else if (c.value.replace(/[^0-9]/g, "").length < 8 || c.value.replace(/[^0-9]/g, "").length > 15) {
         a.innerHTML = '<div style="color:var(--accent);font-weight:500;background:rgba(255,42,109,0.1);padding:10px;border-radius:8px;border:1px solid rgba(255,42,109,0.3)"><i class="fas fa-times"></i> Invalid number format</div>';
       } else {
         const bc = c.value.replace(/[^0-9]/g, "");
